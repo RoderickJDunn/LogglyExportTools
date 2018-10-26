@@ -7,29 +7,43 @@ __author__ = 'Mauricio Roman'
     This API has functions to grab more than 5000 results from the Loggly API
 """
 
-import json, csv, time, pytz, traceback
-import re, math, sys
+import json
+import csv
+import time
+import pytz
+import traceback
+import re
+import math
+import sys
 import requests                                 # For REST API
-import urllib2, simplejson                      # For logging with Loggly
+import urllib2
+import json as simplejson                      # For logging with Loggly
 from numpy import *
 import datetime
 
-def initiateSearch(accountFqdn, query, searchFrom, searchTo, username, password):
+
+def initiateSearch(accountFqdn, query, searchFrom, searchTo, username, password, headers=None):
     """ Initiates the search, and returns a temporary ID """
 
     # We request results in pages of 500 events
     # We search in ascending order, so as to build a constantly growing timeline
     search_url = ("https://" + accountFqdn + "/apiv2/search?q=" + query + "&from=" +
-                   str(searchFrom) + "&until=" + str(searchTo) + "&order=asc&size=500")
+                  str(searchFrom) + "&until=" + str(searchTo) + "&order=asc&size=500")
 
     # print "Search URL: " + search_url
+    auth = None
+
+    if not headers:
+        auth = (username, password)
 
     # We launch the search
-    r = requests.get(search_url, auth=(username, password), timeout=60, verify=False)
+    r = requests.get(search_url, timeout=60, verify=False,
+                     auth=auth, headers=headers)
 
     try:
+        print(r.status_code)
         rsid = r.json()['rsid']['id']
-	# print "rsid: " + str(rsid)
+        # print "rsid: " + str(rsid)
 
     except ValueError:
         print "Error obtaining data"
@@ -38,12 +52,12 @@ def initiateSearch(accountFqdn, query, searchFrom, searchTo, username, password)
     return rsid
 
 
-def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jsonFlag):
+def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jsonFlag, headers=None):
     """ Collects the results from a search that was initialized, one page at a time, and returns the entire list
         As one of its inputs, it requires a formatting function, located in the queryFormat module
     """
 
-    #We loop through all the pages, each of which has 500 events, up to max_events
+    # We loop through all the pages, each of which has 500 events, up to max_events
 
     page = 0
     d = []
@@ -51,25 +65,36 @@ def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jso
     total_events = 1
     page_size = 500
     events_loaded = 0
+    # print "Search URL: " + search_url
+    auth = None
+
+    if not headers:
+        auth = (username, password)
+
+    # headers={
+    #     'Authorization': 'bearer ae11c5c8-ac02-4ba2-a4cc-72c4c8861d23'}
 
     while(page * page_size < min(total_events, max_events)):
 
         results_url = "http://" + accountFqdn + "/apiv2/events"
-        url_params = {'rsid':str(rsid),'page':str(page)}
+        url_params = {'rsid': str(rsid), 'page': str(page)}
 
         retries = 0
         resp1 = ""
         resp2 = ""
 
         while(retries < 5):
-            r = requests.get(results_url, params=url_params, auth=(username, password), timeout=300, verify=False)
+            r = requests.get(results_url, params=url_params,
+                             auth=auth,
+                             headers=headers,
+                             timeout=300, verify=False)
 
             try:
 
-                #resp1 is the raw json tree, which includes info on total events
+                # resp1 is the raw json tree, which includes info on total events
                 resp1 = r.json()
 
-                #resp2 is a table with the features we want
+                # resp2 is a table with the features we want
                 try:
                     resp2 = formatFunc(resp1)
                 except KeyError:
@@ -79,15 +104,15 @@ def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jso
                 break
 
             except ValueError as e:
-		exc_type, exc_value, exc_traceback = sys.exc_info()
-   		print "*** print_tb:"
-    		traceback.print_tb(exc_traceback, file=sys.stdout)
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                print "*** print_tb:"
+                traceback.print_tb(exc_traceback, file=sys.stdout)
 
-		text = ""
-		if(len(r.text) > 128):
-		   text = r.text[0:127]
-		else:
-		   text = r.text
+                text = ""
+                if(len(r.text) > 128):
+                    text = r.text[0:127]
+                else:
+                    text = r.text
                 print "Error status code: " + str(e) + " " + str(r.status_code) + " " + str(text)
                 retries = retries + 1
         # End Inner While Loop
@@ -100,16 +125,16 @@ def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jso
         if not d:
             total_events = resp1['total_events']
             # If total_events exceeds return capacity, break and return
-            
-	    if jsonFlag:
-	    	d = {}
-	    	d['events'] = []
-	    if total_events > max_events:
+
+            if jsonFlag:
+                d = {}
+                d['events'] = []
+            if total_events > max_events:
                 break
 
         if jsonFlag:
-	    for e in resp2['events']:
-		d['events'].append(e)
+            for e in resp2['events']:
+                d['events'].append(e)
             # Upper bound on events loaded...
             events_loaded = len(d['events'])
         else:
@@ -127,7 +152,7 @@ def fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jso
 
 def getSearch(query, formatFunc, searchFrom_init, searchToFinal, step,
               outputFile, newFile, jsonFlag,
-              accountFqdn, username, password, loggly_key = None):
+              accountFqdn, username, password, loggly_key=None, token=None):
     """ Collects search results in several steps, adjusting the time step dynamically """
 
     session_id = int(round(time.time() * 1000))
@@ -142,8 +167,8 @@ def getSearch(query, formatFunc, searchFrom_init, searchToFinal, step,
     if not jsonFlag:
         wr = csv.writer(f)
     else:
-	totalData = {}
-	totalData['events'] = []
+        totalData = {}
+        totalData['events'] = []
 
     i = 0
 
@@ -152,21 +177,26 @@ def getSearch(query, formatFunc, searchFrom_init, searchToFinal, step,
     searchTo = []
     total_events = []
     events_loaded = []
+    headers = None
 
     delta_step.append(step)             # Step in seconds
     searchFrom.append(searchFrom_init)
-    searchTo.append(searchFrom[0] + datetime.timedelta(0,delta_step[0]))
+    searchTo.append(searchFrom[0] + datetime.timedelta(0, delta_step[0]))
+
+    if token:
+        headers = {'Authorization': 'bearer ' + token}
 
     print "step, total events, events loaded"
 
     while searchTo[i] <= searchToFinal and searchTo[i] != searchFrom[i]:
 
-    	rsid = initiateSearch(accountFqdn, query, searchFrom[i], searchTo[i],
-                              username, password)
+        rsid = initiateSearch(accountFqdn, query, searchFrom[i], searchTo[i],
+                              username, password, headers)
 
         if rsid > 0:
             newFile = 0
-            ([x1, x2], data) = fetchResults(accountFqdn, rsid, username, password, newFile, formatFunc, jsonFlag)
+            ([x1, x2], data) = fetchResults(accountFqdn, rsid,
+                                            username, password, newFile, formatFunc, jsonFlag, headers)
 
             total_events.append(x1)
             events_loaded.append(x2)
@@ -175,42 +205,46 @@ def getSearch(query, formatFunc, searchFrom_init, searchToFinal, step,
             print str(i) + "," + str(total_events[i]) + "," + str(events_loaded[i])
 
             # We only write to file if the total events returned is less than the limit
-	    write_flag = (total_events[i] <= events_loaded[i])
+            write_flag = (total_events[i] <= events_loaded[i])
 
             # We log the query results, before changing the search from and to parameters
             if loggly_key is not None:
- 	    	logQuery(loggly_key, session_id, searchFrom[i], searchTo[i], events_loaded[i], total_events[i], write_flag, i)
+                logQuery(loggly_key, session_id,
+                         searchFrom[i], searchTo[i], events_loaded[i], total_events[i], write_flag, i)
 
             # Calculate the time step dynamically based on previous data
-            delta_step.append(getTimeStep(searchFrom, searchTo, searchToFinal, total_events, write_flag, i, step))
+            delta_step.append(getTimeStep(searchFrom, searchTo,
+                                          searchToFinal, total_events, write_flag, i, step))
 
             # Write only if we get all the records that we asked for, as there is no guarantee that, if we receive
             # a subset of all records, that they will start at the SearchFrom time
             if(write_flag):
-		if jsonFlag:
-		    for e in data['events']:
-			totalData['events'].append(e)
- 		else:
+                if jsonFlag:
+                    for e in data['events']:
+                        totalData['events'].append(e)
+                else:
                     for item in data:
-			wr.writerow(item)
+                        wr.writerow(item)
 
                 searchFrom.append(searchTo[i])
             else:
                 searchFrom.append(searchFrom[i])
 
-            #endif
-            searchTo.append(searchFrom[i+1] + datetime.timedelta(0,delta_step[i+1]))
-	    
+            # endif
+            searchTo.append(searchFrom[i + 1] +
+                            datetime.timedelta(0, delta_step[i + 1]))
+
         else:
             print "Could not initiate search...exiting"
             break
 
-        time.sleep(3)   # Pause a few seconds so that we do not overwhelm Loggly servers
+        # Pause a few seconds so that we do not overwhelm Loggly servers
+        time.sleep(3)
         i += 1
 
     if jsonFlag:
-      print "Total Events: " + str(len(totalData['events']))
-      f.write(json.dumps(totalData))
+        print "Total Events: " + str(len(totalData['events']))
+        f.write(json.dumps(totalData))
 
     f.close()
 
@@ -228,7 +262,7 @@ def getTimeStep(searchFrom, searchTo, searchToFinal, total_events, write_flag, c
 
     # Calculate average "speed" using the last 30 records
 
-    for i in range(count+1)[-30:]:
+    for i in range(count + 1)[-30:]:
         diff = searchTo[i] - searchFrom[i]
         delta_sec = diff.total_seconds()
         vel.append(total_events[i] / delta_sec)
@@ -240,22 +274,22 @@ def getTimeStep(searchFrom, searchTo, searchToFinal, total_events, write_flag, c
     if(avg + std_dev == 0):
         return step
 
-    #If we failed in our previous estimation, use the point velocity measure plus one std. dev.
+    # If we failed in our previous estimation, use the point velocity measure plus one std. dev.
     if not write_flag:
         delta_sec = max_events / (vel[-1:] + std_dev)
- 	
-	# if we are not writing, the max time step can't be more than than the final time minus the current from
-    	maxDelta = (searchToFinal - searchFrom[count]).total_seconds()
-    	if(int(asscalar(delta_sec)) > maxDelta):
+
+        # if we are not writing, the max time step can't be more than than the final time minus the current from
+        maxDelta = (searchToFinal - searchFrom[count]).total_seconds()
+        if(int(asscalar(delta_sec)) > maxDelta):
             return maxDelta
 
-    #Otherwise, let us just use the average plus one std. dev.
+    # Otherwise, let us just use the average plus one std. dev.
     else:
         delta_sec = max_events / (avg + std_dev)
 
-    	# if we are writing, the max time step can't be more than the final minus the current to, which will become the new from time
-    	maxDelta = (searchToFinal - searchTo[count]).total_seconds()
-    	if(int(asscalar(delta_sec)) > maxDelta):
+        # if we are writing, the max time step can't be more than the final minus the current to, which will become the new from time
+        maxDelta = (searchToFinal - searchTo[count]).total_seconds()
+        if(int(asscalar(delta_sec)) > maxDelta):
             return maxDelta
 
     return asscalar(delta_sec)
@@ -264,18 +298,19 @@ def getTimeStep(searchFrom, searchTo, searchToFinal, total_events, write_flag, c
 def logQuery(loggly_key, session_id, searchFrom, searchTo, events_loaded, total_events, write_flag, count):
     """ Sends a log to Loggly reporting the status of the search """
     log_data = "PLAINTEXT=" + urllib2.quote(simplejson.dumps(
-                  {
-                  'timestamp':str(datetime.datetime.today()) , 'level':'info', 'session_id':session_id,
-                  'from':str(searchFrom), 'until':str(searchTo),
-                  'events_loaded':events_loaded, 'total_events':total_events, 'write_flag':write_flag, 'count':count
-                   }))
+        {
+            'timestamp': str(datetime.datetime.today()), 'level': 'info', 'session_id': session_id,
+            'from': str(searchFrom), 'until': str(searchTo),
+            'events_loaded': events_loaded, 'total_events': total_events, 'write_flag': write_flag, 'count': count
+        }))
     # Send log data to Loggly
-    urllib2.urlopen("https://logs-01.loggly.com/inputs/" + loggly_key + "/tag/queryAPI/", log_data)
+    urllib2.urlopen("https://logs-01.loggly.com/inputs/" +
+                    loggly_key + "/tag/queryAPI/", log_data)
 
 
 def getUTCtime(timezone, t0, t1, dst0, dst1):
     """ Transforms time from 'timezone' to UTC """
-    local = pytz.timezone (timezone)
+    local = pytz.timezone(timezone)
     t0 = local.localize(t0, is_dst=dst0).astimezone(pytz.utc)
-    t1   = local.localize(t1,   is_dst=dst1).astimezone(pytz.utc)
+    t1 = local.localize(t1,   is_dst=dst1).astimezone(pytz.utc)
     return t0, t1
